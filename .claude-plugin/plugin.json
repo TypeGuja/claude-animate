@@ -1,0 +1,10 @@
+{
+  "name": "animate",
+  "version": "0.1.0",
+  "description": "Let Claude Code work in Adobe Animate: inspect .fla puppets, tween in-between views, draw vector shapes, and see its renders through grids, onion skins and screenshots, all via JSFL.",
+  "author": {
+    "name": "Type_Guja"
+  },
+  "license": "MIT",
+  "keywords": ["adobe-animate", "jsfl", "fla", "animation", "puppet", "2d"]
+}

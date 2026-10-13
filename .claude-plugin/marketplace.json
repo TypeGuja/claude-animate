@@ -1,0 +1,13 @@
+{
+  "name": "claude-animate",
+  "owner": {
+    "name": "Type_Guja"
+  },
+  "plugins": [
+    {
+      "name": "animate",
+      "source": "./",
+      "description": "Drive Adobe Animate from Claude Code via JSFL: inspect, tween, draw, render, and look."
+    }
+  ]
+}
