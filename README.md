@@ -15,7 +15,7 @@ Claude never clicks in the UI. It writes a script, runs it in Animate, renders t
 In Claude Code:
 
 ```
-/plugin marketplace add Type_Guja/claude-animate
+/plugin marketplace add TypeGuja/claude-animate
 /plugin install animate@claude-animate
 ```
 
