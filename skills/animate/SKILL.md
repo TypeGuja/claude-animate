@@ -39,18 +39,32 @@ Drawing:
 - `readShapes(doc, sym, layer, frame)` returns contours as quadratic edges. Take palette colours from `shape.contours[i].fill.color`.
 - `exitEdit(doc)`.
 
+- `renderLayers(doc, sym, frame, outDir, layers|null)` renders each layer of a frame (0-based) to its own `<NN>_<layer>.png`, plus `bounds.json`, so parts share symbol coordinates. Other layers are turned into guides temporarily and restored.
+
+## Geometry without JSFL: xfl.py (Python + numpy)
+
+Edits vector data directly in the XFL XML inside the .fla. It is exact (an unchanged round trip renders pixel-identical) and avoids the vertex-API crash.
+- `xfl.py unpack <fla> <dir>` / `pack <dir> <fla>` (stores `mimetype` first). Do not pack over a file that is open in Animate.
+- `xfl.py symbols <dir> [filter]`; `xfl.py layers <dir> <symbol> [--frame N]` lists layers, keyframes and instances (`name:firstFrame`).
+- `xfl.py export <dir> <symbol> --frame N [--layer L] -o shapes.json` gives the frame's shapes: fill/stroke styles (colour, or raw XML for gradients) and edges as `[["M",x,y],["L",x,y],["Q",cx,cy,x,y]]` in symbol pixels, with a `sid` per shape.
+- `xfl.py import <dir> shapes.json` writes them back by `sid`; `sid: null` with `layer` and `frame` adds a new shape to that keyframe.
+- `xfl.py warp <dir> <symbol> --frame N --pts pts.json [--layer L] [--no-instances]` applies a thin-plate-spline warp from control points `{"src": [[x,y]...], "dst": [[x,y]...]}` to shape vertices and to instance matrices (including local rotation/scale).
+- Loop: unpack → edit → pack to a NEW file name → `renderSymbol` / `renderLayers` in Animate → `look.py diff` / `onion` → repeat.
+
 ## Eyes: look.py (needs Pillow)
 
 Each command writes a PNG to `<temp>/claude_animate_look/`, which you then view.
 - `look.py screen` captures the Animate window (`--full` for the whole screen; Windows only).
 - `look.py grid <png> --step 20` draws a grid in symbol coordinates (the red lines are the 0 axes). Use it to place `drawPath` points.
 - `look.py onion a.png b.png [...]` overlays the images: the first in red, the last in blue, middle ones as-is. Use it as tracing paper for in-betweens.
+- `look.py diff <a.png> <ref.png>` compares a silhouette against a reference in symbol coordinates: IoU, % extra (red) and % missing (blue), and where they differ.
 - `look.py sheet <png...>` makes a labelled contact sheet. `look.py zoom <png> x0 y0 x1 y1 --k 4` gives a zoomed crop in symbol coordinates.
 - Every frame of a `renderSymbol` sequence shares one canvas. `bounds.json` holds that canvas in symbol space.
 
 ## Known Animate 2024 pitfalls
 
-- **Crash:** editing shape vertices (`shape.beginEdit` + `vertex.setLocation` / `edge.setControl`) kills Animate. To deform a shape, read it, recompute the points, `clearLayer`, and redraw.
+- **Crash:** editing shape vertices (`shape.beginEdit` + `vertex.setLocation` / `edge.setControl`) kills Animate. Deform shapes with `xfl.py warp` or `export`/`import` instead.
+- `exportToPNGSequence(f, f)` writes TWO frames (f and f+1); file numbers are 1-based.
 - `fl.drawingLayer` `path.addCurve` drops its control points; that is why `drawPath` samples curves.
 - `document.importFile` with SVG imported nothing during testing.
 - `doc.selectAll()` selects across **all** layers. Use `selectLayer`.

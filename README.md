@@ -6,6 +6,7 @@ A Claude Code plugin that lets Claude **work inside Adobe Animate**. Through JSF
 - move, rotate and scale puppet parts, and change pivots and keyframes;
 - **build in-between views and poses** by tweening part transforms between existing keyframes (for example, a new 34° view between a 7/8 view and a 3/4 view of a character turnaround);
 - **draw** new vector shapes with fills and strokes;
+- **edit vector geometry exactly** through the XFL XML (`xfl.py`): export shapes to JSON, change them, write them back, or warp a part with control points;
 - **see what it did**: it renders symbols to PNG with a coordinate grid, an onion-skin overlay, contact sheets and zoomed crops, and it can screenshot the Animate window (useful for dialogs and errors).
 
 Claude never clicks in the UI. It writes a script, runs it in Animate, renders the result, looks at it, and iterates.
@@ -24,7 +25,8 @@ Or copy `skills/animate` into `~/.claude/skills/`.
 Requirements:
 - Adobe Animate (tested with Animate 2024 on Windows 10);
 - Python 3 for the runner;
-- [Pillow](https://pypi.org/project/pillow/) for `look.py` (`pip install pillow`).
+- [Pillow](https://pypi.org/project/pillow/) for `look.py` (`pip install pillow`);
+- [NumPy](https://pypi.org/project/numpy/) for `xfl.py` and `look.py diff`; 7-Zip is used for unpacking when installed.
 
 If Animate is not in the default location, set `ANIMATE_EXE` to the path of `Animate.exe`.
 
@@ -34,7 +36,8 @@ If Animate is not in the default location, set `ANIMATE_EXE` to the path of `Ani
 |---|---|
 | `run_jsfl.py` | Inlines `lib.jsfl` and your script into one file, starts Animate with it, waits, and prints the log. The log is written line by line, so a crash still shows how far the script got. |
 | `lib.jsfl` | Helpers for inspecting, transforming, drawing and rendering. |
-| `look.py` | Claude's eyes: `screen`, `grid`, `onion`, `sheet`, `zoom`. |
+| `look.py` | Claude's eyes: `screen`, `grid`, `onion`, `sheet`, `zoom`, `diff`. |
+| `xfl.py` | Exact geometry I/O on the XFL inside a .fla: `unpack`/`pack`, `export`/`import` shapes as JSON, thin-plate-spline `warp`. |
 | `examples/` | `inspect.jsfl`, `draw.jsfl`, `inbetween.jsfl`. |
 
 On first run Animate asks *"Run as command or open for editing?"*. Click **Run** (and tick "don't ask again" if offered).

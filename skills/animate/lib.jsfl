@@ -256,3 +256,44 @@ function readShapes(doc, sym, layer, frame) {
     }
     return out;
 }
+
+// PNG каждого слоя кадра frame (0-based) по отдельности: <outDir>/<NN>_<слой>.png + bounds.json.
+// Остальные слои временно становятся guide (маска своей части остаётся), потом всё восстанавливается.
+// layers: null — все видимые не-guide слои, или массив имён.
+function renderLayers(doc, sym, frame, outDir, layers) {
+    FLfile.createFolder(uri(outDir));
+    var it = findItem(doc, sym), tl = it.timeline, keep = [], out = [];
+    for (var i = 0; i < tl.layers.length; i++) keep.push({ t: tl.layers[i].layerType, p: tl.layers[i].parentLayer, v: tl.layers[i].visible });
+    var want = function (L) { return L.layerType != "guide" && L.layerType != "folder" && L.layerType != "mask" && (!layers || layers.indexOf(L.name) >= 0); };
+    var targets = [];
+    for (var i = 0; i < tl.layers.length; i++) { var fr = tl.layers[i].frames[frame]; if (want(tl.layers[i]) && fr && fr.elements.length) targets.push(i); }
+    var b = {};
+    try {
+        for (var q = 0; q < targets.length; q++) {
+            var ti = targets[q], T = tl.layers[ti], mask = T.parentLayer && T.parentLayer.layerType == "mask" ? T.parentLayer : null;
+            for (var i = 0; i < tl.layers.length; i++) {
+                var L = tl.layers[i];
+                if (i == ti || L == mask || L.layerType == "folder") continue;
+                if (mask && L.parentLayer == mask) { L.visible = false; continue; }
+                if (L.layerType != "guide") L.layerType = "guide";
+            }
+            var nm = (q < 10 ? "0" : "") + q + "_" + T.name.replace(/[^\w\-]/g, "_");
+            var r = frameBounds(tl, frame);
+            it.exportToPNGSequence(uri(outDir + "/" + nm + ".png"), frame + 1, frame + 1);
+            // Animate дописывает номер кадра к имени — переименуем в nm.png
+            var n = String(frame + 1); while (n.length < 4) n = "0" + n;
+            var got = outDir + "/" + nm + n + ".png";
+            if (FLfile.exists(uri(got))) { FLfile.remove(uri(outDir + "/" + nm + ".png")); FLfile.copy(uri(got), uri(outDir + "/" + nm + ".png")); FLfile.remove(uri(got)); }
+            // Animate 2024: exportToPNGSequence(f, f) пишет ДВА кадра (f и f+1) — лишний удаляем
+            var n2 = String(frame + 2); while (n2.length < 4) n2 = "0" + n2;
+            if (FLfile.exists(uri(outDir + "/" + nm + n2 + ".png"))) FLfile.remove(uri(outDir + "/" + nm + n2 + ".png"));
+            if (r) b[nm + ".png"] = r;
+            out.push(nm);
+            for (var i = 0; i < tl.layers.length; i++) { tl.layers[i].layerType = keep[i].t; if (keep[i].p) tl.layers[i].parentLayer = keep[i].p; tl.layers[i].visible = keep[i].v; }
+        }
+    } finally {
+        for (var i = 0; i < tl.layers.length; i++) { tl.layers[i].layerType = keep[i].t; if (keep[i].p) tl.layers[i].parentLayer = keep[i].p; tl.layers[i].visible = keep[i].v; }
+    }
+    FLfile.write(uri(outDir + "/bounds.json"), toJSON(b));
+    return out;
+}

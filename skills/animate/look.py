@@ -5,6 +5,7 @@ python look.py grid <png> [out.png] [--step 20]   — сетка в коорди
 python look.py onion <a.png> <b.png> [c.png ...] [-o out.png] — наложение: первый красным, последний синим, середина как есть
 python look.py sheet <png...> [-o out.png] [--cols 6] [--size 200]
 python look.py zoom <png> x0 y0 x1 y1 [out.png] [--k 4]   — кусок (в координатах символа, если есть .json)
+python look.py diff <a.png> <ref.png> [-o out.png] [--thr 32] — силуэт a против эталона: IoU, лишнее (красное), недостающее (синее)
 Нужен Pillow (pip install pillow). screen — только Windows.
 """
 import argparse
@@ -183,6 +184,49 @@ def zoom(a):
     print(p, bg.size)
 
 
+def place(pngs):
+    """Картинки в общей системе координат символа (по bounds.json) → (холст W,H, смещения, масштаб)."""
+    ims = [Image.open(p).convert("RGBA") for p in pngs]
+    ms = [meta(p) for p in pngs]
+    if all(ms):
+        s = ims[0].width / ms[0]["width"]
+        L = min(m["left"] for m in ms); T = min(m["top"] for m in ms)
+        R = max(m["left"] + m["width"] for m in ms); B = max(m["top"] + m["height"] for m in ms)
+        W, H = int((R - L) * s) + 2, int((B - T) * s) + 2
+        offs = [(int(round((m["left"] - L) * s)), int(round((m["top"] - T) * s))) for m in ms]
+        return ims, (W, H), offs, (L, T, s)
+    W = max(i.width for i in ims); H = max(i.height for i in ims)
+    return ims, (W, H), [((W - i.width) // 2, H - i.height) for i in ims], None
+
+
+def diff(a):
+    import numpy as np
+    ims, (W, H), offs, org = place([a.png, a.ref])
+    masks = []
+    for im, o in zip(ims, offs):
+        c = Image.new("L", (W, H), 0)
+        c.paste(im.getchannel("A"), o)
+        masks.append(np.asarray(c) > a.thr)
+    A, R = masks
+    inter, uni = (A & R).sum(), (A | R).sum()
+    extra, miss = (A & ~R).sum(), (R & ~A).sum()
+    iou = inter / uni if uni else 1.0
+    img = np.full((H, W, 3), 255, np.uint8)
+    img[A & R] = (170, 170, 170); img[A & ~R] = (230, 40, 40); img[R & ~A] = (40, 80, 230)
+    out = Image.fromarray(img)
+    ys, xs = np.nonzero(A ^ R)
+    print(f"IoU {iou:.3f}  лишнее {extra / max(R.sum(), 1):.1%}  не хватает {miss / max(R.sum(), 1):.1%}"
+          + ("  (без bounds.json — выравнивание по низу/центру)" if not org else ""))
+    if len(xs) and org:
+        L, T, s = org
+        print(f"расхождения в координатах символа: x {L + xs.min() / s:.0f}..{L + xs.max() / s:.0f}, y {T + ys.min() / s:.0f}..{T + ys.max() / s:.0f}")
+    k = max(1, round(500 / max(W, H)))
+    out = out.resize((W * k, H * k), Image.NEAREST)
+    p = out_path(a.out, "diff.png")
+    out.save(p)
+    print(p, out.size)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -194,6 +238,7 @@ def main():
     for n in ("x0", "y0", "x1", "y1"):
         s.add_argument(n, type=float)
     s.add_argument("out", nargs="?"); s.add_argument("--k", type=int, default=4); s.set_defaults(fn=zoom)
+    s = sp.add_parser("diff"); s.add_argument("png"); s.add_argument("ref"); s.add_argument("-o", dest="out"); s.add_argument("--thr", type=int, default=32); s.set_defaults(fn=diff)
     a = ap.parse_args()
     a.fn(a)
 
