@@ -4,6 +4,7 @@ python xfl.py unpack <file.fla> <dir>
 python xfl.py pack <dir> <file.fla>                       — mimetype первым, без сжатия
 python xfl.py symbols <dir> [filter]                      — символы библиотеки → файл XML
 python xfl.py layers <dir> <symbol> [--frame N]           — слои, ключи, элементы кадра
+python xfl.py compare <dir> <symbol> F1,F2,...         — таблица слой × кадр: символ:firstFrame (что меняется между ракурсами)
 python xfl.py export <dir> <symbol> --frame N [--layer L ...] [-o shapes.json]
 python xfl.py import <dir> <shapes.json>                  — записать изменённые/новые фигуры обратно
 python xfl.py warp <dir> <symbol> --frame N --pts pts.json [--layer L ...] [--no-instances]
@@ -44,7 +45,12 @@ def unpack(a):
         shutil.rmtree(a.dir)
     os.makedirs(a.dir)
     if SEVENZIP:  # zipfile отвергает часть .fla из Animate
-        subprocess.run([SEVENZIP, "x", "-y", a.fla, "-o" + a.dir], check=True, stdout=subprocess.DEVNULL)
+        # 7-Zip на части .fla пишет "Headers Error" (код 2), но всё распаковывает — проверяем по результату
+        r = subprocess.run([SEVENZIP, "x", "-y", a.fla, "-o" + a.dir], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if not os.path.exists(os.path.join(a.dir, "DOMDocument.xml")):
+            sys.exit(f"7z не распаковал {a.fla}: {r.stderr.strip()}")
+        if r.returncode:
+            print("7z предупреждение:", r.stderr.strip().splitlines()[-1] if r.stderr.strip() else r.returncode)
     else:
         zipfile.ZipFile(a.fla).extractall(a.dir)
     print(a.dir)
@@ -147,6 +153,30 @@ def layers_cmd(a):
         lab = f.get("name")
         print(f"{ln!r:28} {lt:7} кадр {f.get('index', '0'):>4}+{f.get('duration', '1'):<3}"
               + (f" [{lab}]" if lab else "") + (f" фигур {sh}" if sh else "") + (f" {inst}" if inst else ""))
+
+
+def compare(a):
+    root = ET.parse(sym_file(a.dir, a.symbol)).getroot()
+    fs = [int(x) for x in a.frames.split(",")]
+    rows = []
+    for lay in root.iter(NS + "DOMLayer"):
+        if lay.get("layerType") in ("guide", "folder"):
+            continue
+        cells = [""] * len(fs)
+        box = lay.find(NS + "frames")
+        for f in (box if box is not None else []):
+            for k, n in enumerate(fs):
+                if frame_covers(f, n):
+                    cell = [e.get("libraryItemName").split("/")[-1] + ":" + e.get("firstFrame", "0") for e in f.iter(NS + "DOMSymbolInstance")]
+                    sh = len(list(f.iter(NS + "DOMShape")))
+                    cells[k] = " ".join(cell + ([f"фигур {sh}"] if sh else []))
+        if any(cells):
+            rows.append((lay.get("name") or "?", cells))
+    w = max([len(r[0]) for r in rows] + [5])
+    cw = max([len(c) for _, cs in rows for c in cs] + [6])
+    print(" " * w + " | " + " | ".join(f"{n:>{cw}}" for n in fs))
+    for ln, cells in rows:
+        print(f"{ln:<{w}} | " + " | ".join(f"{c:>{cw}}" for c in cells))
 
 
 # ---------- формат рёбер ----------
@@ -453,6 +483,7 @@ def main():
     s = sp.add_parser("pack"); s.add_argument("dir"); s.add_argument("fla"); s.set_defaults(fn=pack)
     s = sp.add_parser("symbols"); s.add_argument("dir"); s.add_argument("filter", nargs="?"); s.set_defaults(fn=symbols)
     s = sp.add_parser("layers"); s.add_argument("dir"); s.add_argument("symbol"); s.add_argument("--frame", type=int); s.set_defaults(fn=layers_cmd)
+    s = sp.add_parser("compare"); s.add_argument("dir"); s.add_argument("symbol"); s.add_argument("frames"); s.set_defaults(fn=compare)
     s = sp.add_parser("export"); s.add_argument("dir"); s.add_argument("symbol"); s.add_argument("--frame", type=int, required=True)
     s.add_argument("--layer", action="append"); s.add_argument("-o", dest="out"); s.set_defaults(fn=export)
     s = sp.add_parser("import"); s.add_argument("dir"); s.add_argument("json"); s.set_defaults(fn=import_)

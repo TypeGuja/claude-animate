@@ -94,7 +94,7 @@ def grid(a):
     k = max(1, round(600 / max(im.width, im.height)))
     pad = 30
     W, H = im.width * k + pad * 2, im.height * k + pad * 2
-    bg = Image.new("RGBA", (W, H), "white")
+    bg = Image.new("RGBA", (W, H), BG)
     bg.paste(im.resize((im.width * k, im.height * k), Image.NEAREST), (pad, pad), im.resize((im.width * k, im.height * k), Image.NEAREST))
     d = ImageDraw.Draw(bg)
     f = font(10)
@@ -132,7 +132,7 @@ def onion(a):
     else:
         W = max(i.width for i in ims); H = max(i.height for i in ims)
         offs = [((W - i.width) // 2, H - i.height) for i in ims]
-    bg = Image.new("RGBA", (W, H), "white")
+    bg = Image.new("RGBA", (W, H), BG)
     n = len(ims)
     for idx, (im, o) in enumerate(zip(ims, offs)):
         if n > 1 and idx in (0, n - 1):
@@ -156,7 +156,7 @@ def sheet(a):
     s = a.size / max(w, h)
     cw, ch = int(w * s), int(h * s) + 14
     cols = min(a.cols, len(ims)); rows = (len(ims) + cols - 1) // cols
-    bg = Image.new("RGB", (cols * cw, rows * ch), "white")
+    bg = Image.new("RGB", (cols * cw, rows * ch), BG)
     d = ImageDraw.Draw(bg); f = font(11)
     for k, (p, im) in enumerate(zip(a.pngs, ims)):
         im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))))
@@ -178,7 +178,7 @@ def zoom(a):
         y0, y1 = (y0 - m["top"]) * s, (y1 - m["top"]) * s
     c = im.crop((int(x0), int(y0), int(x1), int(y1)))
     c = c.resize((c.width * a.k, c.height * a.k), Image.NEAREST)
-    bg = Image.new("RGBA", c.size, "white"); bg.alpha_composite(c)
+    bg = Image.new("RGBA", c.size, BG); bg.alpha_composite(c)
     p = out_path(a.out, "zoom.png")
     bg.convert("RGB").save(p)
     print(p, bg.size)
@@ -227,6 +227,9 @@ def diff(a):
     print(p, out.size)
 
 
+BG = "white"  # --bg: фон листов (белые персонажи на белом не видны — бери "#888")
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -239,7 +242,10 @@ def main():
         s.add_argument(n, type=float)
     s.add_argument("out", nargs="?"); s.add_argument("--k", type=int, default=4); s.set_defaults(fn=zoom)
     s = sp.add_parser("diff"); s.add_argument("png"); s.add_argument("ref"); s.add_argument("-o", dest="out"); s.add_argument("--thr", type=int, default=32); s.set_defaults(fn=diff)
+    ap.add_argument("--bg", default="white", help='цвет фона, например "#888" для белых персонажей')
     a = ap.parse_args()
+    global BG
+    BG = a.bg
     a.fn(a)
 
 

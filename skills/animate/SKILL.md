@@ -39,6 +39,7 @@ Drawing:
 - `readShapes(doc, sym, layer, frame)` returns contours as quadratic edges. Take palette colours from `shape.contours[i].fill.color`.
 - `exitEdit(doc)`.
 
+- `makeView(doc, sym, base, other, N, t, {symbol: frame})` builds a new view at frame N: it copies key `base` across all layers, moves each part a fraction `t` toward its counterpart in key `other` (same layer and symbol), and swaps inner frames of parts from the map (an array value is used in order of appearance).
 - `renderLayers(doc, sym, frame, outDir, layers|null)` renders each layer of a frame (0-based) to its own `<NN>_<layer>.png`, plus `bounds.json`, so parts share symbol coordinates. Other layers are turned into guides temporarily and restored.
 
 ## Geometry without JSFL: xfl.py (Python + numpy)
@@ -46,6 +47,7 @@ Drawing:
 Edits vector data directly in the XFL XML inside the .fla. It is exact (an unchanged round trip renders pixel-identical) and avoids the vertex-API crash.
 - `xfl.py unpack <fla> <dir>` / `pack <dir> <fla>` (stores `mimetype` first). Do not pack over a file that is open in Animate.
 - `xfl.py symbols <dir> [filter]`; `xfl.py layers <dir> <symbol> [--frame N]` lists layers, keyframes and instances (`name:firstFrame`).
+- `xfl.py compare <dir> <symbol> 101,107,111` prints a layer × frame table of `symbol:firstFrame`. It shows which inner frames of parts change between views, and which drawn frames no view uses.
 - `xfl.py export <dir> <symbol> --frame N [--layer L] -o shapes.json` gives the frame's shapes: fill/stroke styles (colour, or raw XML for gradients) and edges as `[["M",x,y],["L",x,y],["Q",cx,cy,x,y]]` in symbol pixels, with a `sid` per shape.
 - `xfl.py import <dir> shapes.json` writes them back by `sid`; `sid: null` with `layer` and `frame` adds a new shape to that keyframe.
 - `xfl.py warp <dir> <symbol> --frame N --pts pts.json [--layer L] [--no-instances]` applies a thin-plate-spline warp from control points `{"src": [[x,y]...], "dst": [[x,y]...]}` to shape vertices and to instance matrices (including local rotation/scale).
