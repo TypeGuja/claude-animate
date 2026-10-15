@@ -7,7 +7,7 @@ python xfl.py layers <dir> <symbol> [--frame N]           — слои, ключ
 python xfl.py compare <dir> <symbol> F1,F2,...         — таблица слой × кадр: символ:firstFrame (что меняется между ракурсами)
 python xfl.py export <dir> <symbol> --frame N [--layer L ...] [-o shapes.json]
 python xfl.py import <dir> <shapes.json>                  — записать изменённые/новые фигуры обратно
-python xfl.py warp <dir> <symbol> --frame N --pts pts.json [--layer L ...] [--no-instances]
+python xfl.py warp <dir> <symbol> --frame N --pts pts.json [--layer L ...] [--no-instances] [--deep 2] [--bend]
 
 Координаты везде в пикселях символа (XFL хранит twips = px*20).
 shapes.json: {"symbol", "shapes": [{"sid", "layer", "frame", "fills": [...], "strokes": [...],
@@ -20,6 +20,7 @@ Fla должна быть CC/XFL (zip). Бинарный CS4 сначала пе
 import argparse
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -70,7 +71,15 @@ def pack(a):
                 rel = os.path.relpath(p, a.dir).replace("\\", "/")
                 if rel != "mimetype":
                     z.write(p, rel, zipfile.ZIP_DEFLATED)
-    os.replace(tmp, a.fla)
+    import time
+    for k in range(60):  # Animate держит только что закрытый .fla ещё несколько секунд
+        try:
+            os.replace(tmp, a.fla)
+            break
+        except PermissionError:
+            if k == 59:
+                raise
+            time.sleep(0.5)
     print(a.fla, os.path.getsize(a.fla))
 
 
@@ -415,6 +424,139 @@ def warp_path(path, f):
     return out
 
 
+def _warp_shape_tps(edges, f):
+    """Изогнуть все рёбра фигуры разом. Концы рёбер, совпадающие до 0.1 твипа (DHX пишет одну точку то hex,
+    то десятичной — значения расходятся на тысячные), получают ОДНУ координату: иначе после округления
+    контур размыкается и Animate не заливает фигуру (при сдвиге/масштабе везёт, при изгибе — нет)."""
+    # Кривые бьются на куски (≈4 px), у куска контрольная точка подбирается так, чтобы изогнутая кривая шла
+    # через изогнутую середину: иначе тонкие полосы (каёмки, нарисованные заливкой между двумя кривыми)
+    # при нелинейном изгибе перехлёстываются, а пересекающиеся рёбра Animate выкидывает вместе с фигурой.
+    key = lambda x, y: (round(x * 200), round(y * 200))
+    ends, segs = {}, []          # segs: (тип, P0, P1-контроль|None, P2) в исходных координатах
+    for e in edges:
+        cur, ss = None, []
+        for c in e["path"]:
+            if c[0] == "M":
+                cur = (c[1], c[2]); ends.setdefault(key(*cur), cur); ss.append(("M", None, None, cur))
+            elif c[0] == "L":
+                p2 = (c[1], c[2]); ends.setdefault(key(*p2), p2); ss.append(("L", cur, None, p2)); cur = p2
+            else:
+                p1, p2 = (c[1], c[2]), (c[3], c[4]); ends.setdefault(key(*p2), p2)
+                n = int(min(16, max(1, math.ceil((math.dist(cur, p1) + math.dist(p1, p2)) / 4.0))))
+                for i in range(n):  # де Кастельжо: кусок [t0, t1]
+                    t0, t1 = i / n, (i + 1) / n
+                    B = lambda t: ((1 - t) ** 2 * cur[0] + 2 * t * (1 - t) * p1[0] + t * t * p2[0], (1 - t) ** 2 * cur[1] + 2 * t * (1 - t) * p1[1] + t * t * p2[1])
+                    ss.append(("Q", B(t0) if i else cur, B((t0 + t1) / 2), B(t1) if i < n - 1 else p2))
+                cur = p2
+        segs.append(ss)
+    ek = list(ends)
+    mids = [s[2] for ss in segs for s in ss if s[0] == "Q"]
+    inner = [s[1] for ss in segs for s in ss if s[0] == "Q"] + [s[3] for ss in segs for s in ss if s[0] == "Q"]
+    pts = [ends[k] for k in ek] + mids + inner
+    q = f(np.array(pts)) if pts else []
+    em = {k: (float(q[i][0]), float(q[i][1])) for i, k in enumerate(ek)}
+    nm, nq = len(mids), len(ek)
+    qm, qa, qb = q[nq:nq + nm], q[nq + nm:nq + 2 * nm], q[nq + 2 * nm:]
+    r3 = lambda p: (round(float(p[0]), 3), round(float(p[1]), 3))
+    j = 0
+    for e, ss in zip(edges, segs):
+        out = []
+        for t, p0, pm, p2 in ss:
+            if t == "M":
+                out.append(["M", *r3(em[key(*p2)])])
+            elif t == "L":
+                out.append(["L", *r3(em[key(*p2)])])
+            else:
+                a = em[key(*p0)] if key(*p0) in em else qa[j]
+                b = em[key(*p2)] if key(*p2) in em else qb[j]
+                c = (2 * qm[j][0] - (a[0] + b[0]) / 2, 2 * qm[j][1] - (a[1] + b[1]) / 2)  # кривая через f(середины)
+                out.append(["Q", *r3(c), *r3(b)]); j += 1
+        e["path"] = out
+
+
+
+def _polyline(path, k=6):
+    """Рёбра → отрезки (кривые по k точек): [(x0,y0,x1,y1), ...]."""
+    segs, cur = [], None
+    for c in path:
+        if c[0] == "M":
+            cur = (c[1], c[2])
+        elif c[0] == "L":
+            segs.append((*cur, c[1], c[2])); cur = (c[1], c[2])
+        else:
+            p1, p2 = (c[1], c[2]), (c[3], c[4]); prev = cur
+            for i in range(1, k + 1):
+                t = i / k
+                q = ((1 - t) ** 2 * cur[0] + 2 * t * (1 - t) * p1[0] + t * t * p2[0], (1 - t) ** 2 * cur[1] + 2 * t * (1 - t) * p1[1] + t * t * p2[1])
+                segs.append((*prev, *q)); prev = q
+            cur = p2
+    return segs
+
+
+def _crosses(edges):
+    """Есть ли собственные пересечения рёбер фигуры (кроме касаний в общих концах)."""
+    S = np.array([sg for e in edges for sg in _polyline(e["path"])], float)
+    if len(S) < 2:
+        return False
+    a, b = S[:, None, :2], S[:, None, 2:]
+    c, d = S[None, :, :2], S[None, :, 2:]
+    cr = lambda u, v, w: (v[..., 0] - u[..., 0]) * (w[..., 1] - u[..., 1]) - (v[..., 1] - u[..., 1]) * (w[..., 0] - u[..., 0])
+    d1, d2, d3, d4 = cr(c, d, a), cr(c, d, b), cr(a, b, c), cr(a, b, d)
+    hit = (d1 * d2 < -1e-9) & (d3 * d4 < -1e-9)
+    np.fill_diagonal(hit, False)
+    return bool(hit.any())
+
+
+BEND = [False]  # True (--bend): гнуть фигуры внутри по полю; иначе — каждая фигура своим аффинным приближением
+
+
+def warp_shape(edges, f):
+    """--bend: изогнуть фигуру по полю; если контур от этого пересекает сам себя (тонкие каёмки, острые кончики) —
+    взять лучшее аффинное приближение поля на этой фигуре: оно контур не ломает никогда.
+    Без --bend — сразу аффинно (надёжно: Animate выкидывает фигуры с самопересечениями, а тонкие каёмки DHX
+    при изгибе внутри иногда отбрасываются даже без найденных пересечений)."""
+    import copy
+    orig = copy.deepcopy(edges)
+    P = np.array([v for e in orig for c in e["path"] for v in zip(c[1::2], c[2::2])], float)
+    if not len(P):
+        return "empty", None
+    Q = f(P)
+    # аффинное приближение поля на фигуре: A = I + D, D с регуляризацией к нулю (для почти линейных фигур —
+    # ресницы, штрихи — чистый МНК даёт вырожденное/зеркальное сжатие поперёк, и Animate выкидывает фигуру)
+    c0 = P.mean(0); Pc = P - c0
+    lam = 0.05 * len(P) * max(float((Pc ** 2).sum(1).mean()), 1e-6)
+    X = np.c_[Pc, np.ones(len(P))]
+    Xa = np.r_[X, np.sqrt(lam) * np.array([[1.0, 0, 0], [0, 1.0, 0]])]
+    Ya = np.r_[Q - P, np.zeros((2, 2))]
+    D = np.linalg.lstsq(Xa, Ya, rcond=None)[0]
+    L = np.eye(2) + D[:2]
+    if np.linalg.det(L) < 0.3:  # всё равно вырождается — только сдвиг
+        L = np.eye(2)
+    t = c0 + D[2] - c0 @ L
+    A = np.r_[L, t[None, :]]  # 3x2: [x y 1] @ A — для рёбер и матриц градиентов
+    if BEND[0]:
+        _warp_shape_tps(edges, f)
+        if not _crosses(edges) or _crosses(orig):
+            return "tps", A
+    for e, o in zip(edges, orig):
+        e["path"] = [[c[0]] + [round(float(v), 3) for xy in zip(c[1::2], c[2::2]) for v in (np.array([*xy, 1.0]) @ A)] for c in o["path"]]
+    return "affine", A
+
+
+def warp_styles(styles, A):
+    """Матрицы градиентов/растровых заливок (в координатах фигуры) — тем же аффинным преобразованием."""
+    if A is None:
+        return
+    L = np.array([[A[0, 0], A[1, 0]], [A[0, 1], A[1, 1]]]); t = A[2]
+    for st in styles:
+        if "xml" not in st or "<Matrix" not in st["xml"]:
+            continue
+        def fix(m):
+            a, b, c, d, tx, ty = mat_get(m.group(0))
+            N = L @ np.array([[a, c], [b, d]]); tt = L @ np.array([tx, ty]) + t
+            return mat_tag([N[0, 0], N[1, 0], N[0, 1], N[1, 1], tt[0], tt[1]])
+        st["xml"] = MAT_RE.sub(fix, st["xml"])
+
 MAT_RE = re.compile(r"<Matrix\b[^>]*/>")
 
 
@@ -451,6 +593,91 @@ def warp_instance(block, f):
     return head + "<matrix>" + new + "</matrix>" + block[len(head):]
 
 
+
+# ---------- глубокий изгиб: вложенные символы гнутся внутри (копия символа на экземпляр) ----------
+
+def _lib_dir(d):
+    return os.path.join(d, "LIBRARY")
+
+
+def dup_symbol(d, name, tag):
+    """Копия символа name под именем name__tag (файл рядом, Include в DOMDocument). → (имя, путь)."""
+    lib = library(d)
+    src = lib.get(name) or sym_file(d, name)
+    new = name + "__" + tag
+    if new in lib:
+        sys.exit(f"копия {new!r} уже есть")
+    txt = open(src, encoding="utf-8").read()
+    iid = "%08x-%08x" % (int.from_bytes(os.urandom(4), "big"), int.from_bytes(os.urandom(4), "big"))
+    head = re.search(r"<DOMSymbolItem\b[^>]*>", txt).group(0)
+    nh = re.sub(r'\bname="([^"]*)"', lambda m: 'name="%s__%s"' % (m.group(1), tag), head, count=1)
+    nh = re.sub(r'\bitemID="[^"]*"', 'itemID="%s"' % iid, nh, count=1)
+    txt = txt.replace(head, nh, 1)
+    dst = os.path.join(os.path.dirname(src), os.path.basename(src)[:-4] + "__" + tag + ".xml")
+    open(dst, "w", encoding="utf-8").write(txt)
+    href = os.path.relpath(dst, _lib_dir(d)).replace("\\", "/")
+    shref = os.path.relpath(src, _lib_dir(d)).replace("\\", "/")
+    dp = os.path.join(d, "DOMDocument.xml")
+    doc = open(dp, encoding="utf-8").read()
+    m = re.search(r'<Include href="%s"[^>]*/>' % re.escape(shref.replace("&", "&amp;")), doc) or re.search(r'<Include href="%s"[^>]*/>' % re.escape(shref), doc)
+    inc = '<Include href="%s" itemIcon="1" loadImmediate="false" itemID="%s"/>' % (href.replace("&", "&amp;"), iid)
+    nl = chr(10)
+    doc = doc[:m.end()] + nl + "          " + inc + doc[m.end():] if m else doc.replace("</symbols>", "     " + inc + nl + "     </symbols>", 1)
+    open(dp, "w", encoding="utf-8").write(doc)
+    return new, dst
+
+
+def _compose_inner(f, m):
+    """Поле в координатах символа: M^-1 ∘ f ∘ M (M — матрица экземпляра: локальные → родитель)."""
+    A = np.array([[m[0], m[2]], [m[1], m[3]]]); t = np.array([m[4], m[5]])
+    Ai = np.linalg.inv(A)
+    def g(Q):
+        Q = np.atleast_2d(np.asarray(Q, float))
+        return (f(Q @ A.T + t) - t) @ Ai.T
+    return g
+
+
+_DEEP_N = [0]
+_DEEP_RUN = "%04x" % int.from_bytes(os.urandom(2), "big")  # свой префикс копий на запуск — имена не пересекаются
+
+
+def warp_text(d, txt, f, depth, only=None):
+    """Изогнуть фигуры и экземпляры в тексте символа. only=(множество sid, множество iid) или None — всё.
+    depth>0: экземпляр → копия его символа, изогнутая внутри (рекурсивно); иначе — аффинно по якобиану."""
+    root = ET.fromstring(txt)
+    shapes = {}
+    for k, e in enumerate(root.iter(NS + "DOMShape")):
+        if only is None or k in only[0]:
+            shapes[k] = shape_json(e, k, None, ET.Element("f"))
+            mx = e.find(NS + "matrix/" + NS + "Matrix")  # фигура со своей матрицей — координаты локальные
+            fs = _compose_inner(f, [float(mx.get(q, dv)) for q, dv in (("a", 1), ("b", 0), ("c", 0), ("d", 1), ("tx", 0), ("ty", 0))]) if mx is not None else f
+            _, A = warp_shape(shapes[k]["edges"], fs)
+            warp_styles(shapes[k]["fills"] + shapes[k]["strokes"], A)
+    def inst(b, k):
+        if depth <= 0:
+            return warp_instance(b, f)
+        nm = unesc(re.search(r'libraryItemName="([^"]*)"', b).group(1))
+        mm = MAT_RE.search(b)
+        m = mat_get(mm.group(0)) if mm else [1, 0, 0, 1, 0, 0]
+        if abs(m[0] * m[3] - m[1] * m[2]) < 1e-9:
+            return b
+        _DEEP_N[0] += 1
+        new, path = dup_symbol(d, nm, "w%s_%d" % (_DEEP_RUN, _DEEP_N[0]))
+        inner = open(path, encoding="utf-8").read()
+        open(path, "w", encoding="utf-8").write(warp_text(d, inner, _compose_inner(f, m), depth - 1))
+        return re.sub(r'libraryItemName="[^"]*"', 'libraryItemName="%s"' % new.replace("&", "&amp;").replace('"', "&quot;"), b, count=1)
+    for rx, todo, fn in ((SHAPE_RE, shapes, lambda b, k: replace_shape(b, shapes[k])),
+                         (INST_RE, None, inst)):
+        out, pos = [], 0
+        for k, m in enumerate(rx.finditer(txt)):
+            take = (k in todo) if todo is not None else (only is None or k in only[1])
+            if take:
+                out.append(txt[pos:m.start()]); out.append(fn(m.group(0), k)); pos = m.end()
+        out.append(txt[pos:])
+        txt = "".join(out)
+    return txt
+
+
 def warp(a):
     pts = json.load(open(a.pts, encoding="utf-8"))
     f = tps_fit(pts["src"], pts["dst"], pts.get("reg", 0.0))
@@ -460,20 +687,11 @@ def warp(a):
     sel = pick(root, a.frame, a.layer)
     shapes = {sidx[id(e)]: shape_json(e, sidx[id(e)], ln, fr) for ln, fr, t, e in sel if t == "DOMShape"}
     insts = set() if a.no_instances else {iidx[id(e)] for ln, fr, t, e in sel if t == "DOMSymbolInstance"}
-    for sh in shapes.values():
-        for e in sh["edges"]:
-            e["path"] = warp_path(e["path"], f)
-    txt = open(p, encoding="utf-8").read()
-    for rx, todo, fn in ((SHAPE_RE, shapes, lambda b, k: replace_shape(b, shapes[k])),
-                         (INST_RE, insts, lambda b, k: warp_instance(b, f))):
-        out, pos = [], 0
-        for k, m in enumerate(rx.finditer(txt)):
-            if k in todo:
-                out.append(txt[pos:m.start()]); out.append(fn(m.group(0), k)); pos = m.end()
-        out.append(txt[pos:])
-        txt = "".join(out)
+    # --deep N: вложенные символы гнутся внутри (копии); 0 — экземпляры аффинно. Сам символ — только выбранный кадр.
+    BEND[0] = bool(getattr(a, "bend", False))
+    txt = warp_text(a.dir, open(p, encoding="utf-8").read(), f, a.deep, (set(shapes), insts))
     open(p, "w", encoding="utf-8").write(txt)
-    print(p, f"фигур {len(shapes)}, экземпляров {len(insts)}")
+    print(p, f"фигур {len(shapes)}, экземпляров {len(insts)}" + (f", копий символов {_DEEP_N[0]}" if a.deep else ""))
 
 
 def main():
@@ -489,6 +707,8 @@ def main():
     s = sp.add_parser("import"); s.add_argument("dir"); s.add_argument("json"); s.set_defaults(fn=import_)
     s = sp.add_parser("warp"); s.add_argument("dir"); s.add_argument("symbol"); s.add_argument("--frame", type=int, required=True)
     s.add_argument("--pts", required=True); s.add_argument("--layer", action="append"); s.add_argument("--no-instances", action="store_true")
+    s.add_argument("--deep", type=int, default=0, help="глубина: вложенные символы гнуть внутри (копии)")
+    s.add_argument("--bend", action="store_true", help="гнуть фигуры внутри по полю (по умолчанию — аффинно на фигуру)")
     s.set_defaults(fn=warp)
     a = ap.parse_args()
     a.fn(a)

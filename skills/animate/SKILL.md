@@ -1,90 +1,89 @@
 ---
 name: animate
-description: Drive Adobe Animate from Claude through JSFL scripts. Use it to open .fla files and inspect symbols, layers, frames, matrices and pivots; to move, rotate or scale parts; to build in-between views or poses by tweening part transforms; to draw new vector shapes; and to render symbol frames to PNG and look at them (with grid, onion skin and window screenshots). Use it whenever the user wants something done in Adobe Animate or to a .fla/.xfl puppet.
+description: Drive Adobe Animate from Claude via JSFL scripts — open .fla, inspect symbols/layers/frames/pivots, move/rotate parts, add Rotation keyframes, render symbol frames to PNG to look at them, save. Use for MLP puppet (.fla) work when the user asks to edit/inspect/render in Animate.
 ---
 
-# Adobe Animate via JSFL
+# Animate через JSFL
 
-Claude never clicks in the Animate UI. Everything is a JSFL script run by `run_jsfl.py`. All files sit next to this SKILL.md.
+Claude не рисует мышкой. Всё делается скриптами JSFL, которые запускает `run_jsfl.py`.
 
-## Run a script
+## Запуск
 
 ```
-python <skill dir>/run_jsfl.py <script.jsfl> [--timeout 300]
+python C:/Users/user/.claude/skills/animate/run_jsfl.py <script.jsfl> [--timeout 300]
 ```
 
-- Finds Animate in `C:/Program Files/Adobe/Adobe Animate*/` or `/Applications/Adobe Animate*`. Set env `ANIMATE_EXE` to override.
-- Wraps the script. `lib.jsfl` is inlined, because `fl.runScript` does not share globals. Errors are caught, and everything passed to `log()` comes back on stdout.
-- The log is appended line by line. If Animate crashes or hangs, the output shows the last line that ran.
-- Animate opens a window (there is no headless mode). If it is already running, the script goes to the open instance.
-- On first run Animate may ask "Run as command or open for editing?". The user must click **Run**. If the runner times out, take a screenshot (`look.py screen`) to see the dialog.
-- Write scripts to a scratch/temp folder, never into the user's asset folders.
+- Раннер ищет `Animate.exe` в `C:/Program Files/Adobe/Adobe Animate*/`; переопределить: env `ANIMATE_EXE`.
+- Скрипт оборачивается: подключается `lib.jsfl`, ошибки ловятся, всё из `log()` печатается в stdout.
+- Диалоги Animate отвечает сторож `dialogs.py`: он встроен в раннер, а для долгих сессий есть `python dialogs.py --watch --log файл`. Правила: «долго выполняется» — Нет, «выполнить как команду» — Выполнить, «восстановить» — Нет, «сохранить изменения» — Нет. Неизвестные окна только пишутся в лог. Обёртка ставит `fl.showIdleMessage(false)`.
+- Лог пишется построчно: при краше видно последнюю выполненную строку.
+- Animate открывает окно (headless нет). Если уже запущен — скрипт уходит в открытый экземпляр.
+- Скрипты пиши в scratchpad, не в папки с ассетами.
 
-## lib.jsfl (available in every script)
+## lib.jsfl (доступно в скрипте)
 
-Basics:
-- `log(x)` prints a value; objects become JSON. `toJSON(o)` is also available, since JSFL has no `JSON`.
-- `uri(path)` turns an OS path into `file:///C|/...`.
-- `openDoc(path)` opens a file or reuses an open one. `openCopy(src, dst)` copies the file and opens the copy. **Edit copies only**, and use a new `dst` name each time, because an open file cannot be overwritten.
-- `listSymbols(doc, filter)`, `findItem(doc, name)`.
-- `describeSymbol(doc, name, [f0, f1])` returns layers, labels and keyframes (0-based). For each element it gives its symbol, `firstFrame`, matrix `m=[a,b,c,d,tx,ty]` and pivot.
-- `renderSymbol(doc, name, f0, f1, outDir)` writes a PNG sequence (frames 1-based) plus `bounds.json` with symbol-space bounds. Look at the PNGs with the image reader.
-- `setTransform(doc, sym, layer, frame, idx, {a,b,c,d,tx,ty})`, `setPivot(...)`.
+- `log(x)` — вывод (объекты → JSON).
+- `uri(path)` — путь Windows → `file:///C|/...`.
+- `openDoc(path)` → document. `saveAs(doc, path)` — сохранить КОПИЮ.
+- `listSymbols(doc, filter)` — имена символов библиотеки.
+- `describeSymbol(doc, name)` — слои, лейблы, ключевые кадры, элементы (имя символа, матрица, пивот).
+- `renderSymbol(doc, name, f0, f1, outDir)` — PNG-секвенция кадров символа (1-based) → смотреть через Read.
+- `setTransform(doc, sym, layer, frame, idx, {a,b,c,d,tx,ty})`, `setPivot(..., x, y)`.
+- Рисование:
+  - `openCopy(src, dst)` — копия файла и открыть её (имя dst каждый раз новое: открытый файл не перезаписать);
+  - `editAt(doc, sym, layer, frame)` — войти в символ (слой по имени создаётся);
+  - `style(doc, stroke, width, fill)`;
+  - `drawPath(doc, [["M",x,y],["C",...],["Q",...],["L",...],["Z"]], smooth)` — кривые раскладываются на отрезки, потом `optimizeCurves`;
+  - `clearLayer(doc)`, `selectLayer(doc)` — ТОЛЬКО текущий слой (`doc.selectAll` берёт все слои — не использовать);
+  - `recolor(doc, sym, frame, {"#OLD":"#NEW"})` — перекрасить заливки (через `contour.fill =`, работает без краша);
+  - `readShapes(...)` — контуры кадра (квадратичные Безье); `exitEdit(doc)`.
+- НЕ РАБОТАЕТ:
+  - `warp()` (vertex.setLocation / edge.setControl в beginEdit) — КРАШИТ Animate 2024; деформировать через `xfl.py warp`;
+  - `drawSVG` (`importFile`) — ничего не импортирует;
+  - `path.addCurve` теряет контрольные точки.
 
-Drawing:
-- `editAt(doc, sym, layer, frame)` enters a symbol at a layer and frame. A layer given by name is created if it is missing.
-- `style(doc, strokeHex|null, width, fillHex|null)`.
-- `drawPath(doc, [["M",x,y],["L",x,y],["Q",cx,cy,x,y],["C",c1x,c1y,c2x,c2y,x,y],["Z"]], smooth)`. Curves are sampled into segments and then smoothed with `optimizeCurves` (default 40; 0 turns it off).
-- `selectLayer(doc)` and `clearLayer(doc)` act on the current layer only.
-- `readShapes(doc, sym, layer, frame)` returns contours as quadratic edges. Take palette colours from `shape.contours[i].fill.color`.
-- `exitEdit(doc)`.
+- `makeView(doc, sym, base, other, N, t, {символ: кадр})` — новый ракурс в кадре N: копия ключа base по всем слоям, части сдвинуты на долю t к ключу other (тот же слой и символ), внутренние кадры частей подменяются по словарю (значение-массив — по порядку встреч). Пары кадров N, N+1.
+- `renderLayers(doc, sym, frame, outDir, layers|null)` — каждый слой кадра (0-based) отдельным PNG `<NN>_<слой>.png` + `bounds.json` (части в общих координатах; для сравнения с масками из 3D).
+- Animate 2024: `exportToPNGSequence(f, f)` пишет ДВА кадра (f и f+1), имена 1-based.
 
-- `makeView(doc, sym, base, other, N, t, {symbol: frame})` builds a new view at frame N: it copies key `base` across all layers, moves each part a fraction `t` toward its counterpart in key `other` (same layer and symbol), and swaps inner frames of parts from the map (an array value is used in order of appearance).
-- `renderLayers(doc, sym, frame, outDir, layers|null)` renders each layer of a frame (0-based) to its own `<NN>_<layer>.png`, plus `bounds.json`, so parts share symbol coordinates. Other layers are turned into guides temporarily and restored.
+## Геометрия без JSFL: xfl.py (Python + numpy)
 
-## Geometry without JSFL: xfl.py (Python + numpy)
+Правка вектора прямо в XML внутри .fla. Точно (round-trip пиксель в пиксель проверен) и без крашей API вершин.
+- `xfl.py unpack <fla> <dir>` / `pack <dir> <fla>` (mimetype первым). Файл не должен быть открыт в Animate при pack.
+- `xfl.py symbols <dir> [filter]`, `xfl.py layers <dir> <symbol> [--frame N]` — слои, ключи, экземпляры (`имя:firstFrame`).
+- `xfl.py compare <dir> <symbol> 101,107,111` — таблица слой × кадр (`символ:firstFrame`): сразу видно, какие внутренние кадры частей меняются между ракурсами и какие нарисованы, но не используются.
+- `xfl.py export <dir> <symbol> --frame N [--layer L] -o shapes.json` — фигуры кадра: заливки/обводки (цвет или сырой xml), рёбра как `[["M",x,y],["L",x,y],["Q",cx,cy,x,y]]` в px символа, `sid` фигуры.
+- `xfl.py import <dir> shapes.json` — записать обратно (по `sid`; `sid: null` + `layer` + `frame` — новая фигура в ключ).
+- `xfl.py warp <dir> <symbol> --frame N --pts pts.json [--layer L] [--no-instances] [--deep N] [--bend]` — TPS по опорным точкам `{"src":[[x,y]..],"dst":[[x,y]..]}`. Экземпляры — аффинно по якобиану поля; фигуры — каждая своим регуляризованным аффинным приближением (+ матрицы градиентов; фигуры со своей `<matrix>` — в их координатах). `--bend` гнёт фигуры внутри (кривые бьются на куски, при самопересечении — откат на аффинное). `--deep N` — вложенные символы копируются (`Имя__w<run>_<n>`) и гнутся внутри.
+  - ОСТОРОЖНО: `--deep`/`--bend` на DHX-символах ненадёжны — Animate молча выкидывает часть фигур (тонкие каёмки, радужки с градиентом). Надёжно: деталь целиком (`--deep 0`) или команда Animate ниже.
+  - `pack` ждёт до 30 с, если Animate ещё держит только что закрытый .fla.
+- Цикл: unpack → правка → pack в НОВОЕ имя → Animate `renderSymbol`/`renderLayers` → `look.py diff/onion` → повтор.
 
-Edits vector data directly in the XFL XML inside the .fla. It is exact (an unchanged round trip renders pixel-identical) and avoids the vertex-API crash.
-- `xfl.py unpack <fla> <dir>` / `pack <dir> <fla>` (stores `mimetype` first). Do not pack over a file that is open in Animate.
-- `xfl.py symbols <dir> [filter]`; `xfl.py layers <dir> <symbol> [--frame N]` lists layers, keyframes and instances (`name:firstFrame`).
-- `xfl.py compare <dir> <symbol> 101,107,111` prints a layer × frame table of `symbol:firstFrame`. It shows which inner frames of parts change between views, and which drawn frames no view uses.
-- `xfl.py export <dir> <symbol> --frame N [--layer L] -o shapes.json` gives the frame's shapes: fill/stroke styles (colour, or raw XML for gradients) and edges as `[["M",x,y],["L",x,y],["Q",cx,cy,x,y]]` in symbol pixels, with a `sid` per shape.
-- `xfl.py import <dir> shapes.json` writes them back by `sid`; `sid: null` with `layer` and `frame` adds a new shape to that keyframe.
-- `xfl.py warp <dir> <symbol> --frame N --pts pts.json [--layer L] [--no-instances]` applies a thin-plate-spline warp from control points `{"src": [[x,y]...], "dst": [[x,y]...]}` to shape vertices and to instance matrices (including local rotation/scale).
-- Loop: unpack → edit → pack to a NEW file name → `renderSymbol` / `renderLayers` in Animate → `look.py diff` / `onion` → repeat.
+## Поворот части «как кружку»: part3d.py + команда Animate
 
-## Eyes: look.py (needs Pillow)
+- Модель пони — облако точек по частям: Blender `luna3d.py dump` (PONY=имя) → `G:/mlp_characters/mlp_2d/tools/turn3d/data/model_<пони>.json` (есть Луна, Селестия).
+- `part3d.py field --model M --part head,horn,crown --from A --to B --box l,t,r,b [--damp 0.8 --reg 3000] -o pts.json` — поле сдвигов при повороте на B−A (общий сдвиг части вычитается — его делает сборка поворота). `--shape ellipsoid [--depth k]` — гладкий эллипсоид по рамке без складок (без модели). Рамка — у головы по основе головы/ушам/рогу.
+- `part3d.py fit --pts pts.json --elements els.json -o out.json` — аффинное на каждую деталь по её рамке (устойчивее якобиана в точке).
+- `part3d.py apply file.fla symbol --frame N --pts pts.json [--deep 0]` — unpack → warp → pack.
+- Команда для пользователя: `commands/Повернуть часть по 3D.jsfl` (установлена в `%LOCALAPPDATA%/Adobe/Animate 2024/ru_RU/Configuration/Commands`). Выделить экземпляр → Команды → ввести градусы. Копирует символ (`Имя__turnN`), двигает детали внутри копии; файл не закрывается, Ctrl+Z работает. Автотест: угол в `Configuration/part3d_auto.txt` вместо окна. Лог: `Configuration/part3d_log.txt`.
+- Проверено на голове Луны: ±5.6/11.25° от анфаса — рог прямой, глаза/чёлка целы, дальняя сторона сжимается.
 
-Each command writes a PNG to `<temp>/claude_animate_look/`, which you then view.
-- `look.py screen` captures the Animate window (`--full` for the whole screen; Windows only).
-- `look.py grid <png> --step 20` draws a grid in symbol coordinates (the red lines are the 0 axes). Use it to place `drawPath` points.
-- `look.py onion a.png b.png [...]` overlays the images: the first in red, the last in blue, middle ones as-is. Use it as tracing paper for in-betweens.
-- `look.py diff <a.png> <ref.png>` compares a silhouette against a reference in symbol coordinates: IoU, % extra (red) and % missing (blue), and where they differ.
-- `look.py sheet <png...>` makes a labelled contact sheet. `look.py zoom <png> x0 y0 x1 y1 --k 4` gives a zoomed crop in symbol coordinates.
-- Every frame of a `renderSymbol` sequence shares one canvas. `bounds.json` holds that canvas in symbol space.
+## Глаза: look.py (Python314, PIL)
 
-## Known Animate 2024 pitfalls
+Каждая команда пишет PNG (по умолчанию в `C:/Temp/claude/animate_look/`); смотреть его через Read.
 
-- **Crash:** editing shape vertices (`shape.beginEdit` + `vertex.setLocation` / `edge.setControl`) kills Animate. Deform shapes with `xfl.py warp` or `export`/`import` instead.
-- `exportToPNGSequence(f, f)` writes TWO frames (f and f+1); file numbers are 1-based.
-- `fl.drawingLayer` `path.addCurve` drops its control points; that is why `drawPath` samples curves.
-- `document.importFile` with SVG imported nothing during testing.
-- `doc.selectAll()` selects across **all** layers. Use `selectLayer`.
-- `fl.runScript` runs in its own scope; that is why the runner inlines the library.
-- Old binary CS4 .fla files (header `D0 CF`) open fine; save a copy to get CC/XFL.
+- `look.py screen` — скриншот окна Animate (`--full` — весь экран). Смотреть, когда что-то зависло: там может быть диалог или ошибка.
+- `look.py grid <png> --step 20` — рендер с сеткой в координатах символа (красные линии — оси 0). Помогает задать точки для `drawPath`.
+- `look.py onion a.png b.png [...]` — наложение: первый красным, последний синим, средние как есть. Это калька для промежуточного ракурса.
+- `look.py diff <a.png> <ref.png>` — силуэт против эталона в координатах символа: IoU, % лишнего (красное) и недостающего (синее), диапазон расхождений.
+- `look.py sheet <png...>`, `look.py zoom <png> x0 y0 x1 y1 --k 4` — лист кадров и увеличенный кусок (координаты символа).
+- `grid`, `onion` и `zoom` берут координаты символа из `bounds.json`, который пишет `renderSymbol`. Вся серия кадров лежит на общем холсте.
 
-## Recipe: in-between view from a turnaround
+## Правила
 
-See `examples/inbetween.jsfl`. Character puppets often keep each turnaround view as a keyframe built from the same part symbols.
-1. Convert the gap frame to a keyframe; it becomes a copy of view A.
-2. Match each part to its counterpart in view B, by symbol name or else by "family" (the name without its `_3-4` / `_7-8` suffix).
-3. Lerp the matrix by `t`. For different symbols, move only the bbox centre.
-4. Do the same inside nested synced symbols (heads) per layer. Point their `firstFrame` at the new frame. Clear blink or expression keys that sit in the gap.
-
-Render A, the new frame and B, then compare them side by side or as onion skin before reporting.
-
-## Rules
-
-- Never overwrite the user's original files. Work on `openCopy` copies, and tell the user where the result is.
-- Look at every render before claiming a result.
-- Drawing is blind-coordinate work: draw, render, view with `grid`, fix. For hand-drawn art quality, prefer reusing and transforming existing parts over drawing from scratch.
+- Перед правкой — копия `.fla` (`saveAs` в новый файл). Оригиналы DHX в `G:/mlp_characters/mlp_2d/official` не перезаписывать.
+- CS4-бинарные .fla (начинаются с `D0 CF`) Animate открывает; после `saveAs` они становятся CC/XFL и читаются нашим экспортёром.
+- Рисовать можно (`drawPath`), но точки кривых Claude задаёт вслепую. Каждый рисунок надо рендерить (`renderSymbol`), смотреть через Read и поправлять. Цвета берутся из палитры персонажа (`readShapes` / `contours[].fill.color`).
+- Деформацию существующих фигур через API вершин не делать (краш). Вместо этого `xfl.py export/import/warp`.
+- Без Animate: `.fla` CC = zip с XFL; читать/править XML можно напрямую (`G:/mlp_characters/mlp_2d/tools`, xfl2svg).
+- Animate ставит и логинит пользователь (аккаунт Adobe), Claude не устанавливает.
